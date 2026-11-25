@@ -413,8 +413,8 @@
                             <h3 class="text-base sm:text-lg font-bold text-white">Tren Check-in Harian</h3>
                             <p class="text-xs text-gray-400 mt-0.5">Klik batang tanggal untuk melihat rincian daerah hari tersebut</p>
                         </div>
-                        <span id="selected-date-badge" class="px-3 py-1 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-mono shrink-0">
-                            Hari Ini
+                        <span id="selected-date-badge" class="px-3 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-mono shrink-0">
+                            14 Hari Terakhir
                         </span>
                     </div>
 
@@ -425,14 +425,14 @@
 
                     <!-- Footer Grafik -->
                     <div class="mt-4 flex items-center justify-between gap-2 text-xs text-gray-400">
-                        <span id="chart-selected-summary">Menampilkan data terbaru</span>
-                        <button type="button" onclick="resetRegionFilter()" class="text-indigo-400 hover:text-indigo-300 font-mono underline shrink-0">
-                            Reset ke Hari Ini
+                        <span id="chart-selected-summary">Memuat data 14 hari terakhir...</span>
+                        <button type="button" onclick="resetRegionFilter()" class="text-indigo-400 hover:text-indigo-300 font-mono underline shrink-0 cursor-pointer">
+                            Reset ke 14 Hari
                         </button>
                     </div>
                 </div>
 
-                <!-- Kolom Kanan: Rangkuman Daerah (Dirancang padat meski hanya 2-3 kota) -->
+                <!-- Kolom Kanan: Rangkuman Daerah -->
                 <div class="p-6 sm:p-8 rounded-2xl bg-gray-900/60 border border-white/10 flex flex-col justify-between">
                     <div>
                         <div class="flex items-center justify-between mb-6">
@@ -441,18 +441,42 @@
                                 <p class="text-xs text-gray-400 mt-0.5">Rincian perangkat aktif berdasarkan lokasi check-in</p>
                             </div>
                             <span id="region-count-pill" class="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono">
-                                3 Kota
+                                0 Kota
                             </span>
                         </div>
 
-                        <!-- Kartu-kartu Kota (Lebih besar & detail agar 3 kota tetap mengisi ruang dengan proporsional) -->
+                        <!-- Kartu-kartu Kota -->
                         <div id="regional-list" class="space-y-3.5">
                             <!-- Dirender otomatis oleh JS -->
                         </div>
                     </div>
-
                 </div>
 
+            </div>
+
+            <!-- Modal Rincian "Others" -->
+            <div id="others-region-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/80 p-4" onclick="if (event.target === this) closeOthersRegionModal()">
+                <div class="w-full max-w-md bg-gray-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
+                    <div class="px-5 py-4 bg-gray-950 border-b border-white/10 flex items-center justify-between gap-3">
+                        <div>
+                            <h4 class="text-sm font-bold text-white">Rincian Daerah Lainnya (Others)</h4>
+                            <p id="others-modal-subtitle" class="text-[11px] text-gray-400 mt-0.5">Daftar kota di luar 3 teratas</p>
+                        </div>
+                        <button type="button" onclick="closeOthersRegionModal()" class="p-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white transition cursor-pointer">
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                        </button>
+                    </div>
+
+                    <div id="others-modal-list" class="p-4 overflow-y-auto space-y-2.5 divide-y divide-white/5">
+                        <!-- Diisi dinamis saat kartu Others diklik -->
+                    </div>
+
+                    <div class="px-5 py-3 bg-gray-950 border-t border-white/10 flex justify-end">
+                        <button type="button" onclick="closeOthersRegionModal()" class="px-4 py-1.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-xs font-semibold text-gray-200 transition cursor-pointer">
+                            Tutup
+                        </button>
+                    </div>
+                </div>
             </div>
 
         </div>
@@ -626,39 +650,149 @@
     </footer>
 
     <script>
-        lucide.createIcons();
+        if (typeof lucide !== "undefined") lucide.createIcons();
 
         const TELEMETRY_API_URL = "https://watchers-hub-five.vercel.app/api/public/telemetry";
         let cachedTelemetryData = null;
+        let selectedDayIndex = null; // null = mode 14 hari (semua bar hijau), number = index hari terpilih
+        let currentOthersRegions = [];
+        let currentOthersTotalDevices = 0;
+        let currentPeriodLabel = "14 Hari Terakhir";
 
-        function renderRegions(regions, dateLabel, totalDevices) {
-            const listContainer = document.getElementById('regional-list');
-            const dateBadge = document.getElementById('selected-date-badge');
-            const summaryText = document.getElementById('chart-selected-summary');
-            const regionPill = document.getElementById('region-count-pill');
+        function escapeTelemetryHtml(str) {
+            return String(str || "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;");
+        }
 
+        // Gabungkan seluruh regions dari 14 hari menjadi satu daftar kota terurut DESC
+        function aggregate14DaysRegions(days) {
+            const cityMap = new Map();
+            days.forEach(day => {
+                (day.regions || []).forEach(r => {
+                    const name = (r.city || "Unknown").trim();
+                    const count = Number(r.devices || 0);
+                    cityMap.set(name, (cityMap.get(name) || 0) + count);
+                });
+            });
+
+            return Array.from(cityMap.entries())
+                .map(([city, devices]) => ({ city, devices }))
+                .sort((a, b) => b.devices - a.devices);
+        }
+
+        function openOthersRegionModal() {
+            if (!currentOthersRegions || currentOthersRegions.length === 0) return;
+
+            const modal = document.getElementById("others-region-modal");
+            const subtitle = document.getElementById("others-modal-subtitle");
+            const listEl = document.getElementById("others-modal-list");
+
+            subtitle.textContent = `${currentPeriodLabel} • ${currentOthersRegions.length} daerah lainnya`;
+            const safeTotal = Math.max(currentOthersTotalDevices, 1);
+
+            listEl.innerHTML = currentOthersRegions.map((reg, idx) => {
+                const pct = Math.round((reg.devices / safeTotal) * 100);
+                return `
+                    <div class="pt-2.5 first:pt-0 flex items-center justify-between gap-3 text-xs">
+                        <div class="flex items-center gap-2.5 min-w-0">
+                            <span class="w-5 h-5 rounded-md bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono text-[10px] flex items-center justify-center shrink-0">
+                                ${idx + 4}
+                            </span>
+                            <span class="font-semibold text-gray-100 truncate">${escapeTelemetryHtml(reg.city)}</span>
+                        </div>
+                        <div class="text-right shrink-0 font-mono">
+                            <span class="text-white font-bold">${reg.devices}</span>
+                            <span class="text-gray-400 text-[11px]">PC (${pct}%)</span>
+                        </div>
+                    </div>
+                `;
+            }).join("");
+
+            modal.classList.remove("hidden");
+            modal.classList.add("flex");
+        }
+
+        function closeOthersRegionModal() {
+            const modal = document.getElementById("others-region-modal");
+            modal.classList.add("hidden");
+            modal.classList.remove("flex");
+        }
+
+        function renderRegions(rawRegions, dateLabel, totalDevices) {
+            const listContainer = document.getElementById("regional-list");
+            const dateBadge = document.getElementById("selected-date-badge");
+            const summaryText = document.getElementById("chart-selected-summary");
+            const regionPill = document.getElementById("region-count-pill");
+
+            currentPeriodLabel = dateLabel;
+            currentOthersTotalDevices = totalDevices;
             dateBadge.textContent = dateLabel;
-            regionPill.textContent = `${regions.length} Kota`;
             summaryText.textContent = `${dateLabel}: ${totalDevices} perangkat aktif tercatat`;
 
-            if (!regions || regions.length === 0) {
+            const sortedRegions = [...(rawRegions || [])].sort((a, b) => b.devices - a.devices);
+            regionPill.textContent = `${sortedRegions.length} Kota`;
+
+            if (sortedRegions.length === 0) {
+                currentOthersRegions = [];
                 listContainer.innerHTML = `
                     <div class="p-4 rounded-xl bg-white/[0.02] border border-white/5 text-center text-xs text-gray-400">
-                        Belum ada aktivitas perangkat tercatat pada tanggal ini.
+                        Belum ada aktivitas perangkat tercatat pada periode ini.
                     </div>
                 `;
                 return;
             }
 
+            // Aturan: Tampilkan 3 kota saja. Jika ada 5 kota atau lebih (>= 5), kota ke-4 dst digabung menjadi "Others"
+            let displayItems = [];
+            if (sortedRegions.length >= 5) {
+                displayItems = sortedRegions.slice(0, 3).map(r => ({ ...r, isOthers: false }));
+                currentOthersRegions = sortedRegions.slice(3);
+                const othersSum = currentOthersRegions.reduce((acc, r) => acc + Number(r.devices || 0), 0);
+                displayItems.push({
+                    city: `Others (${currentOthersRegions.length} Kota)`,
+                    devices: othersSum,
+                    isOthers: true,
+                });
+            } else {
+                // Jika total kota 1..4, ambil maksimal 3 teratas sesuai instruksi ("di kotanya akan menunjukkan 3 kota saja")
+                displayItems = sortedRegions.slice(0, 3).map(r => ({ ...r, isOthers: false }));
+                currentOthersRegions = [];
+            }
+
             const safeTotal = Math.max(totalDevices, 1);
-            listContainer.innerHTML = regions.map(reg => {
+            listContainer.innerHTML = displayItems.map(reg => {
                 const pct = Math.round((reg.devices / safeTotal) * 100);
+
+                if (reg.isOthers) {
+                    return `
+                        <button type="button" onclick="openOthersRegionModal()"
+                            class="w-full text-left p-3.5 rounded-xl bg-indigo-500/[0.06] border border-indigo-500/25 hover:border-indigo-400 hover:bg-indigo-500/10 transition cursor-pointer group">
+                            <div class="flex items-center justify-between text-xs mb-2">
+                                <span class="font-bold text-indigo-300 group-hover:text-white flex items-center gap-2">
+                                    <span class="w-2 h-2 rounded-full bg-indigo-400"></span>
+                                    ${escapeTelemetryHtml(reg.city)}
+                                    <span class="text-[10px] font-normal text-indigo-300/80 underline ml-1">Lihat detail</span>
+                                </span>
+                                <span class="font-mono text-gray-300">
+                                    <strong class="text-white">${reg.devices}</strong> PC (${pct}%)
+                                </span>
+                            </div>
+                            <div class="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                <div class="h-full rounded-full bg-gradient-to-r from-indigo-500 to-sky-400" style="width: ${pct}%"></div>
+                            </div>
+                        </button>
+                    `;
+                }
+
                 return `
                     <div class="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 hover:border-emerald-500/30 transition">
                         <div class="flex items-center justify-between text-xs mb-2">
                             <span class="font-bold text-white flex items-center gap-2">
                                 <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-                                ${reg.city}
+                                ${escapeTelemetryHtml(reg.city)}
                             </span>
                             <span class="font-mono text-gray-300">
                                 <strong class="text-white">${reg.devices}</strong> PC (${pct}%)
@@ -669,7 +803,64 @@
                         </div>
                     </div>
                 `;
-            }).join('');
+            }).join("");
+        }
+
+        function renderBarChart(days) {
+            const chartContainer = document.getElementById("activity-bar-chart");
+            const peakDevices = Math.max(...days.map(d => d.total_devices), 0);
+            const maxDevices = Math.max(peakDevices, 1);
+            chartContainer.innerHTML = "";
+
+            days.forEach((day, index) => {
+                const heightPercent = Math.max(Math.round((day.total_devices / maxDevices) * 100), 10);
+                // Saat selectedDayIndex === null (mode 14 hari), SEMUA bar hijau.
+                // Saat salah satu bar diklik, HANYA bar index tersebut hijau dan sisanya biru.
+                const isHighlighted = selectedDayIndex === null || selectedDayIndex === index;
+
+                const barWrapper = document.createElement("button");
+                barWrapper.type = "button";
+                barWrapper.className = "group flex-1 h-full flex flex-col items-center justify-end gap-2 focus:outline-none cursor-pointer";
+                barWrapper.onclick = () => selectTelemetryDay(index);
+
+                barWrapper.innerHTML = `
+                    <span class="text-[10px] font-mono ${isHighlighted ? "text-emerald-300" : "text-gray-400 group-hover:text-white"} transition">
+                        ${day.total_devices}
+                    </span>
+                    <div class="w-full max-w-[26px] rounded-t-lg transition-all duration-300 ${
+                        isHighlighted
+                            ? "bg-gradient-to-t from-emerald-600 to-emerald-400 shadow-lg shadow-emerald-500/20"
+                            : "bg-indigo-500/35 group-hover:bg-indigo-400"
+                    }" style="height: ${heightPercent}%"></div>
+                    <span class="text-[10px] font-mono ${isHighlighted ? "text-emerald-400 font-bold" : "text-gray-500"}">
+                        ${day.date.split(" ")[0]}
+                    </span>
+                `;
+                chartContainer.appendChild(barWrapper);
+            });
+        }
+
+        function selectTelemetryDay(index) {
+            if (!cachedTelemetryData) return;
+            const days = cachedTelemetryData.daily_activity || [];
+            const targetDay = days[index];
+            if (!targetDay) return;
+
+            selectedDayIndex = index;
+            renderBarChart(days);
+            renderRegions(targetDay.regions, targetDay.full_date, targetDay.total_devices);
+        }
+
+        function resetRegionFilter() {
+            if (!cachedTelemetryData) return;
+            const days = cachedTelemetryData.daily_activity || [];
+            selectedDayIndex = null; // Kembalikan ke mode 14 hari (semua bar hijau)
+
+            const total14d = days.reduce((acc, d) => acc + Number(d.total_devices || 0), 0);
+            const aggregatedRegions = aggregate14DaysRegions(days);
+
+            renderBarChart(days);
+            renderRegions(aggregatedRegions, "14 Hari Terakhir", total14d);
         }
 
         function renderTelemetry(data) {
@@ -680,50 +871,18 @@
             const peakDevices = Math.max(...days.map(d => d.total_devices));
             const sumDevices = days.reduce((acc, d) => acc + d.total_devices, 0);
 
-            const lastSyncEl = document.getElementById('telemetry-last-sync');
+            const lastSyncEl = document.getElementById("telemetry-last-sync");
             if (lastSyncEl) lastSyncEl.textContent = data.last_updated;
 
-            document.getElementById('stat-today-devices').textContent = latestDay.total_devices;
-            document.getElementById('stat-peak-devices').textContent = peakDevices;
-            document.getElementById('stat-avg-devices').textContent = Math.round(sumDevices / days.length);
+            const statToday = document.getElementById("stat-today-devices");
+            const statPeak = document.getElementById("stat-peak-devices");
+            const statAvg = document.getElementById("stat-avg-devices");
+            if (statToday) statToday.textContent = latestDay.total_devices;
+            if (statPeak) statPeak.textContent = peakDevices;
+            if (statAvg) statAvg.textContent = Math.round(sumDevices / days.length);
 
-            const chartContainer = document.getElementById('activity-bar-chart');
-            const maxDevices = Math.max(peakDevices, 1);
-            chartContainer.innerHTML = '';
-
-            days.forEach((day, index) => {
-                const heightPercent = Math.max(Math.round((day.total_devices / maxDevices) * 100), 10);
-                const isLatest = index === days.length - 1;
-
-                const barWrapper = document.createElement('button');
-                barWrapper.type = 'button';
-                barWrapper.className = 'group flex-1 h-full flex flex-col items-center justify-end gap-2 focus:outline-none cursor-pointer';
-                barWrapper.onclick = () => renderRegions(day.regions, day.full_date, day.total_devices);
-
-                barWrapper.innerHTML = `
-                    <span class="text-[10px] font-mono text-gray-400 group-hover:text-white transition">
-                        ${day.total_devices}
-                    </span>
-                    <div class="w-full max-w-[26px] rounded-t-lg transition-all duration-300 ${
-                        isLatest
-                        ? 'bg-gradient-to-t from-emerald-600 to-emerald-400 shadow-lg shadow-emerald-500/20'
-                        : 'bg-indigo-500/30 group-hover:bg-indigo-400'
-                    }" style="height: ${heightPercent}%"></div>
-                    <span class="text-[10px] font-mono ${isLatest ? 'text-emerald-400 font-bold' : 'text-gray-500'}">
-                        ${day.date.split(' ')[0]}
-                    </span>
-                `;
-                chartContainer.appendChild(barWrapper);
-            });
-
-            renderRegions(latestDay.regions, latestDay.full_date, latestDay.total_devices);
-        }
-
-        function resetRegionFilter() {
-            if (!cachedTelemetryData) return;
-            const days = cachedTelemetryData.daily_activity;
-            const latestDay = days[days.length - 1];
-            renderRegions(latestDay.regions, latestDay.full_date, latestDay.total_devices);
+            // Pertama kali diload langsung tampilkan mode 14 hari
+            resetRegionFilter();
         }
 
         async function loadPublicTelemetry() {
@@ -735,11 +894,12 @@
                 renderTelemetry(data);
             } catch (err) {
                 console.error("Gagal memuat public telemetry:", err);
-                document.getElementById('chart-selected-summary').textContent = "Gagal memuat data telemetri.";
+                const summaryEl = document.getElementById("chart-selected-summary");
+                if (summaryEl) summaryEl.textContent = "Gagal memuat data telemetri.";
             }
         }
 
-        document.addEventListener('DOMContentLoaded', loadPublicTelemetry);
+        document.addEventListener("DOMContentLoaded", loadPublicTelemetry);
     </script>
 </body>
 </html>
